@@ -1,0 +1,212 @@
+
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   aquidoc.c                                          :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: bamdjar <bamdjar@student.1337.ma>          +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2025/09/06 15:30:48 by bamdjar           #+#    #+#             */
+/*   Updated: 2025/09/06 15:33:36 by bamdjar          ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "minishell.h"
+
+#define HEREDOC_SIZE 37
+
+static char	*name_generate(void)
+{
+	int				fd;
+	unsigned char	buf;
+	char			*path;
+	int				i;
+	const char		*char_buff;
+
+	char_buff = "laBaLeNasEgenA#9!x$V&7*d@Lp%4^s+Zq(3)-Ej=Ym~T8?RfC_wB:1G/"
+				"HJKz0|o]{n[5,i;";
+	path = ft_malloc(HEREDOC_SIZE + 6);
+	if (!path)
+		return (NULL);
+	ft_strlcpy(path, "/tmp/", 6);
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd == -1)
+		return (ft_free(path), NULL);
+	i = 0;
+	while (i < HEREDOC_SIZE)
+	{
+		if (read(fd, &buf, 1) == -1)
+			return (close(fd), ft_free(path), NULL);
+		path[5 + i] = char_buff[(unsigned char)buf % ft_strlen(char_buff)];
+		i++;
+	}
+	close(fd);
+	path[5 + i] = '\0';
+	return (path);
+}
+
+static int	copy_from_pipe_to_file(int pipe_fd, int file_fd)
+{
+	char	buffer[1024];
+	ssize_t	bytes_read;
+
+	while ((bytes_read = read(pipe_fd, buffer, sizeof(buffer))) > 0)
+	{
+		if (write(file_fd, buffer, bytes_read) != bytes_read)
+			return (-1);
+	}
+	if (bytes_read == -1)
+		return (-1);
+	return (0);
+}
+
+static int	process_heredoc_input_child(int fd, const char *delimiter, int expand,
+						t_snail *snail)
+{
+	char	*line;
+	char	*expanded;
+
+	signal(SIGINT, SIG_DFL);
+	signal(SIGQUIT, SIG_IGN);
+	while (1)
+	{
+		line = readline("> ");
+		if (!line)
+		{
+			ft_putstr_fd("minishell: warning: here-document delimited by "
+							"end-of-file\n", 2);
+			exit(1);
+		}
+		if (ft_strcmp(line, delimiter) == 0)
+		{
+			free(line);
+			break ;
+		}
+		if (expand)
+		{
+			expanded = expand_vars(line, snail);
+			write(fd, expanded, ft_strlen(expanded));
+			ft_free(expanded);
+		}
+		else
+			write(fd, line, ft_strlen(line));
+		write(fd, "\n", 1);
+		free(line);
+	}
+	exit(0);
+}
+
+static int	create_heredoc(const char *delimiter, int expand, t_snail *snail)
+{
+	int		pipe_fd[2];
+	int		fd;
+	char	*filename;
+	pid_t	pid;
+	int		status;
+
+	filename = name_generate();
+	if (!filename)
+		return (-1);
+	fd = open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+	if (fd == -1)
+		return (ft_free(filename), -1);
+	if (pipe(pipe_fd) == -1)
+	{
+		close(fd);
+		return (ft_free(filename), -1);
+	}
+	save_signals_for_heredoc(snail);
+	pid = fork();
+	if (pid == -1)
+	{
+		close(pipe_fd[0]);
+		close(pipe_fd[1]);
+		close(fd);
+		restore_signals_after_heredoc(snail);
+		return (ft_free(filename), -1);
+	}
+	if (pid == 0)
+	{
+		close(pipe_fd[0]);
+		process_heredoc_input_child(pipe_fd[1], delimiter, expand, snail);
+	}
+	close(pipe_fd[1]);
+	if (copy_from_pipe_to_file(pipe_fd[0], fd) == -1)
+	{
+		close(pipe_fd[0]);
+		close(fd);
+		waitpid(pid, &status, 0);
+		restore_signals_after_heredoc(snail);
+		ft_free(filename);
+		return (-2);
+	}
+	close(pipe_fd[0]);
+	close(fd);
+	waitpid(pid, &status, 0);
+	restore_signals_after_heredoc(snail);
+	if (WIFSIGNALED(status) && WTERMSIG(status) == SIGINT)
+	{
+		unlink(filename);
+		ft_free(filename);
+		return (-2);
+	}
+	fd = open(filename, O_RDONLY);
+	unlink(filename);
+	ft_free(filename);
+	return (fd);
+}
+
+static int	handle_heredoc_token(t_token *current, t_token *next,
+		t_snail *snail)
+{
+	char	*delimiter;
+	int		expand;
+	int		fd;
+
+	delimiter = ft_strdup(next->value);
+	if (!delimiter)
+		return (1);
+	expand = (next->type == WORD);
+	if (next->type == SQ || next->type == DQ)
+	{
+		delimiter = remove_quotes(delimiter, &next->type);
+		if (!delimiter)
+			return (1);
+		expand = 0;
+	}
+	fd = create_heredoc(delimiter, expand, snail);
+	ft_free(delimiter);
+	if (fd == -2)
+		return (130);
+	if (fd == -1)
+		return (1);
+	current->type = RIN;
+	ft_free(current->value);
+	current->value = ft_strdup("<");
+	ft_free(next->value);
+	next->value = ft_itoa(fd);
+	return (0);
+}
+
+int	process_heredocs(t_snail *snail)
+{
+	t_token	*current;
+	t_token	*next;
+	int		result;
+
+	if (!snail)
+		return (1);
+	current = snail->tokens;
+	while (current)
+	{
+		next = current->next;
+		if (current->type == HER && next)
+		{
+			result = handle_heredoc_token(current, next, snail);
+			if (result != 0)
+				return (result);
+		}
+		current = current->next;
+	}
+	return (0);
+}
