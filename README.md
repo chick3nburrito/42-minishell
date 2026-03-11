@@ -41,7 +41,7 @@ Minishell accepts commands similarly to `bash`:
 minishell$ echo "hello world"
 minishell$ ls -la | grep minishell > out.txt
 minishell$ cat < out.txt
-minishell$ export NAME=world && echo "hello $NAME"
+minishell$ export NAME=world
 ```
 
 ### Builtins (quick notes)
@@ -52,7 +52,7 @@ minishell$ export NAME=world && echo "hello $NAME"
 ## Project Notes / Behavior
 - Exit status follows standard conventions (`$?` is last command status).
 - Error messages aim to match `bash` style where applicable.
-- Some advanced `bash` features may be intentionally out of scope (job control, `&&/||`, wildcards, subshells), depending on your assignment.
+- Some advanced `bash` features may be intentionally out of scope (`&&/||`, wildcards ).
 
 ## Development
 Suggested targets/checks:
